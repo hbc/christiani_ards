@@ -1,0 +1,286 @@
+```{r setup, echo=FALSE}
+opts_chunk$set(tidy=TRUE, highlight=TRUE, fig.align='left', fig.show='hold',
+               cache=FALSE, highlight=TRUE, autodep=TRUE, warning=FALSE, error=FALSE,
+               message=FALSE, prompt=TRUE, comment='', fig.cap='')
+```
+
+# Overview
+This project is looking at THP1 cells extracted from the blood plasma of
+patients with established ARDS as well as control patients. Ultimately
+the goal is to identify a set of biomarkers that predict either risk,
+outcome or both of patients at risk for ARDS. 
+
+There are two sets of six replicates for the case and control condition,
+the data is taken from different patients. There was not any metadata
+about the patients included in the information about the project so
+this will just be a simple case/control analysis.
+
+The bioanalyzer plots ![bioanalyzer plots](images/01.png) of the final
+libraries look great, with a fragment size of ~400.
+
+More importantly, the
+total RNA plots ![total RNA plots](images/02.png) look pretty
+good, some of the RINs are lower than is optimal but overall there is nothing
+concerning.
+
+The QC plots for the data look reasonable but there is a little weirdness
+in the middle of the reads regarding the kmer and GC content. Usually
+this occurs because there is a gene or genes that are soaking up a lot of
+the reads which throws off these two measures.
+
+The coverage plots look pretty good, with a slight bias towards the 3' end
+of the read, this happens sometimes with not 100% intact samples, and from
+the RIN numbers of the bioanalyzer plot it is something to be expected.
+
+Overall about 20 million reads per sample mapped uniquely and concordantly.
+Perfect.
+
+# Setup
+
+First load in the data and get it into two useful dataframes, a **counts** dataframe of the raw number of reads mapping to each gene for each sample and a **samples** dataframe describing the samples.
+
+```{r load-data, cache=TRUE, results='asis'}
+library(dplyr)
+library(extrafont)
+library(xtable)
+library(googleVis)
+library(CHBUtils)
+library(edgeR)
+library(HTSFilter)
+library(ggplot2)
+library(gridExtra)
+library(vsn)
+library(DESeq2)
+library(reshape)
+wd = "/Users/rory/cache/christiani_ards/scripts"
+setwd(wd)
+metadata_file = "/Users/rory/hsph/hsph/projects/christiani_ARDS/data/ards.csv"
+metadata = read.csv(metadata_file, header=TRUE, colClasses="factor")
+count_file = "/Users/rory/hsph/hsph/projects/christiani_ARDS/ards/final/2014-01-14_ards/combined.counts"
+counts = read.table(count_file, header=TRUE, sep="\t")
+rownames(counts) = counts$id
+counts$id = NULL
+samples = data.frame(description=colnames(counts))
+samples = merge(samples, metadata, by="description", sort=FALSE)
+samples = samples[, c("description", "condition")]
+samples$name = paste(samples$condition, c(1:3, 1:3, 4:6, 4:6), sep="_")
+colnames(counts) = samples$name
+
+print(xtable(head(counts)), "html")
+print(xtable(samples), "html")
+```
+
+And a utility function we'll use later to add some context to the data.
+
+```{r utility-functions}
+ensembl_gene = "hsapiens_gene_ensembl"
+filter_type = "ensembl_gene_id"
+gene_symbol = "hgnc_symbol"
+annotate_df = function(d) {
+	require(biomaRt)
+	ensembl = useMart('ensembl', dataset = ensembl_gene)
+	a = getBM(attributes=c(filter_type, gene_symbol, "description"),
+		filters=c(filter_type), values=rownames(d),
+		mart=ensembl)
+	m = merge(d, a, by.x="row.names", by.y=filter_type)
+	return(m)
+}
+```
+
+# Exploratory analysis
+Looking at the data qualitatively is helpful for spotting any
+outliers and seeing if the data makes sense. We will use some of the
+plots in the libraries DESeq and edgeR along with some custom-made
+plots to do this.
+
+Since the range of the data is so huge, (0 - `r max(counts)`) for this
+type of exploratory data analysis it is usually useful to work on
+transformed versions of the data, otherwise a relatively small change
+in a gene highly expessed will dwarf everything else.
+
+A first sanity check is to see which genes are soaking up so many reads.
+Millions of reads for a single gene is a concerning amount of reads to be
+mapping to one gene.
+
+```{r high-count-genes, results='asis'}
+print(xtable(annotate_df(counts[rowSums(counts) > 1000000,])), "html")
+```
+
+these genes are soaking up a ton of reads, it is common the blood samples to
+spend a good bit of your sequencing power sequencing hemoglobin and other
+blood related mRNA.
+
+# Raw count distribution
+Looking at the distribution of the read counts, nothing looks out of the ordinary.
+
+```{r boxplot-raw}
+melted = melt(counts)
+colnames(melted) = c("sample", "count")
+melted$count = log(melted$count)
+ggplot(melted, aes(x=sample, y=count)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+The non-normalized samples don't cluster together very well on a heatmap:
+
+```{r heatmap-notmm}
+dists = dist(t(counts))
+mat = as.matrix(dists)
+rownames(mat) = colnames(mat) = colnames(counts)
+library(gplots)
+heatmap.2(mat, trace="none")
+```
+
+or on a MDS plot:
+
+```{r mds-notmm}
+mds(counts, samples$condition)
+```
+
+Using trimmed mean of M-values (TMM) normalization reduces a small bit of
+the variability in read counts but not by too much.
+
+```{r boxplot-normalized}
+y = DGEList(counts = counts)
+y = calcNormFactors(y)
+normalized_counts = cpm(y, normalized.lib.sizes=TRUE)
+melted = melt(normalized_counts)
+colnames(melted) = c("gene", "sample", "count")
+melted$count = log(melted$count)
+ggplot(melted, aes(x=sample, y=count)) + geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+And the heatmap and MDS plots don't cluster together very well.
+
+```{r heatmap-tmm}
+dists = dist(t(cpm(y, normalized.lib.sizes=TRUE)))
+mat = as.matrix(dists)
+rownames(mat) = colnames(mat) = colnames(counts)
+library(gplots)
+heatmap.2(mat, trace="none")
+```
+
+```{r mds-tmm}
+mds(cpm(y, normalized.lib.sizes=TRUE), samples$condition)
+```
+
+This is a little bit of an ominious sign for finding DE genes. Is there
+anything obvious about the datasets that we are missing? **Surrogate
+Variable Analysis** (SVA) is a way to see if there is something systematic
+about the data that we are not accounting for in the model. This is done by
+determining the eigensystems of the SVD of the residuals of the model fit and
+comparing them to the eigensystems of a null model consisting of the same
+calculation on repeated permutations of the residuals of the model.
+
+```{r sva}
+design = model.matrix(~ 0 + condition, data=samples)
+colnames(design) = c("case", "control")
+y = DGEList(counts=counts)
+y = calcNormFactors(y)
+y = estimateGLMCommonDisp(y, design, verbose=TRUE)
+y = estimateGLMTrendedDisp(y, design)
+y = estimateGLMTagwiseDisp(y, design)
+v = voom(y, design, plot=TRUE)
+n.sv = num.sv(v$E, design, method="leek")
+```
+
+SVA detects `r n.sv` systematic unmodeled variables that might be affecting
+the case/control status.
+
+So a natural question is is there anything either about the samples, about
+the processing of the samples or about the patients that might need to
+be accounted for in the model?
+
+# Drop genes with low counts from analysis
+One feature of RNA-seq data is that the variation of counts has a relationship
+with the number of counts, with a very high variance at a low number of
+counts:
+
+```{r high-variance-in-low-counts}
+bcv(y)
+```
+So we will drop those from the DE consideration which makes the variance
+plot look much nicer.
+```{r discard-low-count-high-variance}
+keep = rowSums(log2(cpm(counts)) > -2.5) >= 4
+counts = counts[keep,]
+table(keep)
+design = model.matrix(~ condition, data=samples)
+y = DGEList(counts = counts)
+y = calcNormFactors(y)
+y = estimateGLMCommonDisp(y, design, verbose=TRUE)
+y = estimateGLMTrendedDisp(y, design)
+y = estimateGLMTagwiseDisp(y, design)
+bcv(y)
+```
+
+# Model fitting
+We will fit three models. Two uncorrected models using **limma** and
+**edgeR** and one corrected model using **limma**.
+
+## EdgeR, uncorrected
+```{r edger-nosva}
+design = model.matrix(~ 0 + condition, data=samples)
+colnames(design) = c("case", "control")
+rownames(design) = colnames(counts)
+y = DGEList(counts=counts)
+y = calcNormFactors(y)
+y = estimateGLMCommonDisp(y, design, verbose=TRUE)
+y = estimateGLMTrendedDisp(y, design)
+y = estimateGLMTagwiseDisp(y, design)
+fit = glmFit(y, design)
+```
+
+and test for differential expression across conditions:
+    
+```{r edger-de, results='asis'}
+cm = makeContrasts(ards=control-case, levels=design)
+lrt = glmLRT(fit, contrast=cm)
+FDR = p.adjust(lrt$table$PValue, method="BH")
+```
+
+We find `r sum(FDR < 0.05)` genes that are differentially expressed without
+correcting for the surrogate variables.
+
+## limma, uncorrected
+```{r limma-uncorrected}
+design = model.matrix(~ 0 + condition, data=samples)
+colnames(design) = c("case", "control")
+rownames(design) = colnames(counts)
+y = DGEList(counts=counts)
+y = calcNormFactors(y)
+v = voom(y, design, plot=TRUE)
+fit = lmFit(v, design)
+cm = makeContrasts(ards=conditioncase-conditioncontrol, levels=design)
+fit2 = contrasts.fit(fit, cm)
+fit2 = eBayes(fit2)
+topTable(fit2, coef=1)
+```
+
+Using **limma** we find `r dim(topTable(fit, n=Inf,p.value=0.05, coef=1))[1]`
+genes that are different.
+
+## limma, corrected
+Using SVA we can possibly correct for some of these genes:
+
+```{r limma-corrected}
+design = model.matrix(~ 0 + condition, data=samples)
+colnames(design) = c("case", "control")
+rownames(design) = colnames(counts)
+y = DGEList(counts=counts)
+y = calcNormFactors(y)
+v = voom(y, design, plot=TRUE)
+null_model = model.matrix(~ 1, data=samples)
+svobj = sva(v$E, design, null_model)
+designsv = cbind(design, svobj$sv)
+colnames(designsv) = c("case", "control", "sv1", "sv2", "sv3")
+fit = lmFit(v$E, designsv)
+cm = makeContrasts(ards=case - control, levels=designsv)
+fit2 = contrasts.fit(fit, cm)
+fit2 = eBayes(fit2)
+topTable(fit2, coef=1)
+```
+
+This leaves us with nothing as significantly different between the case
+and control samples.
+
