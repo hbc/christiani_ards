@@ -1,3 +1,4 @@
+
 ```{r setup, echo=FALSE}
 opts_chunk$set(tidy=TRUE, highlight=TRUE, fig.align='left', fig.show='hold',
                cache=FALSE, highlight=TRUE, autodep=TRUE, warning=FALSE, error=FALSE,
@@ -5,7 +6,7 @@ opts_chunk$set(tidy=TRUE, highlight=TRUE, fig.align='left', fig.show='hold',
 ```
 
 # Overview
-This project is looking at THP1 cells extracted from the blood plasma of
+This project is looking at cells extracted from the blood plasma of
 patients with established ARDS as well as control patients. Ultimately
 the goal is to identify a set of biomarkers that predict either risk,
 outcome or both of patients at risk for ARDS. 
@@ -18,19 +19,46 @@ this will just be a simple case/control analysis.
 The bioanalyzer plots ![bioanalyzer plots](images/01.png) of the final
 libraries look great, with a fragment size of ~400.
 
-More importantly, the
-total RNA plots ![total RNA plots](images/02.png) look pretty
-good, some of the RINs are lower than is optimal but overall there is nothing
-concerning.
+More importantly, the total RNA plots ![total RNA
+plots](images/02.png) look pretty good, some of the RINs are lower
+than is optimal but overall there is nothing concerning.
 
 The QC plots for the data look reasonable but there is a little weirdness
-in the middle of the reads regarding the kmer and GC content. Usually
-this occurs because there is a gene or genes that are soaking up a lot of
-the reads which throws off these two measures.
+in the middle of the reads regarding the GC content. 
+
+
+The plot below shows an representative sequence content per base of
+the read for one of the samples. The bias at the front of the read is
+due to the nonrandom nature of the random hexamer priming during the
+RT-PCR step of the library preparation.  The GC content is correct
+too; the human genome is < 50\% GC but the coding regions are closer
+to 60\% which is what we see here.  So the overall GC content looks
+perfect.
+
+![per-base-content](images/per_base_sequence_content.png)
+
+If we look at the overall GC content of what was sequenced there are
+two large peaks.  Usually these kind of plots occur because there is a
+gene or genes that are soaking up a lot of the reads which throws off
+these two measures. So when we look at the data later we should be
+expecting there to be a small number of genes sequenced repeatedly.
+
+![per-sequence-content](images/per_sequence_gc_content.png) 
 
 The coverage plots look pretty good, with a slight bias towards the 3' end
 of the read, this happens sometimes with not 100% intact samples, and from
-the RIN numbers of the bioanalyzer plot it is something to be expected.
+the RIN numbers of the bioanalyzer plot it is something to be expected. Below
+are three representative plots looking at the coverage of low, medium and
+highly expressed genes.
+
+![mean-low](images/meanCoverage_low.png) 
+![mean-medium](images/meanCoverage_medium.png) 
+![mean-high](images/meanCoverage_high.png)
+
+These look fine to me. The highly expressed transcripts looks awful, but
+I've seen this a bunch of times with data where a small number of transcripts
+are dominating the plot, if the low and medium transcripts had a similar
+dropoff then I would be concerned.
 
 Overall about 20 million reads per sample mapped uniquely and concordantly.
 Perfect.
@@ -39,7 +67,7 @@ Perfect.
 
 First load in the data and get it into two useful dataframes, a **counts** dataframe of the raw number of reads mapping to each gene for each sample and a **samples** dataframe describing the samples.
 
-```{r load-data, cache=TRUE, results='asis'}
+```{r load-data, results='asis'}
 library(dplyr)
 library(extrafont)
 library(xtable)
@@ -47,16 +75,24 @@ library(googleVis)
 library(CHBUtils)
 library(edgeR)
 library(HTSFilter)
+library(limma)
 library(ggplot2)
 library(gridExtra)
 library(vsn)
 library(DESeq2)
 library(reshape)
+library(sva)
+library(gplots)
 wd = "/Users/rory/cache/christiani_ards/scripts"
 setwd(wd)
-metadata_file = "/Users/rory/hsph/hsph/projects/christiani_ARDS/data/ards.csv"
+#metadata_file = "/Users/rory/hsph/hsph/projects/christiani_ARDS/data/ards.csv"
+metadata_file = "../data/ards.csv"
 metadata = read.csv(metadata_file, header=TRUE, colClasses="factor")
-count_file = "/Users/rory/hsph/hsph/projects/christiani_ARDS/ards/final/2014-01-14_ards/combined.counts"
+#count_file = "/Users/rory/hsph/hsph/projects/christiani_ARDS/ards/final/2014-01-14_ards/combined.counts"
+count_file = "../data/combined.counts"
+#blood_file = "/Users/rory/cache/christiani_ards/metadata/blood.csv"
+blood_file = "../data/metadata/blood.csv"
+blood = read.table(blood_file, header=TRUE, sep=",", comment.char="")
 counts = read.table(count_file, header=TRUE, sep="\t")
 rownames(counts) = counts$id
 counts$id = NULL
@@ -120,7 +156,7 @@ melted$count = log(melted$count)
 ggplot(melted, aes(x=sample, y=count)) + geom_boxplot() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ```
-The non-normalized samples don't cluster together very well on a heatmap:
+However, the  non-normalized samples don't cluster together very well on a heatmap:
 
 ```{r heatmap-notmm}
 dists = dist(t(counts))
@@ -136,6 +172,9 @@ or on a MDS plot:
 mds(counts, samples$condition)
 ```
 
+This is common sometimes if the libraries have very different read counts.
+Normalizing the libraries often fixes that.
+
 Using trimmed mean of M-values (TMM) normalization reduces a small bit of
 the variability in read counts but not by too much.
 
@@ -150,7 +189,7 @@ ggplot(melted, aes(x=sample, y=count)) + geom_boxplot() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ```
 
-And the heatmap and MDS plots don't cluster together very well.
+And the heatmap and MDS plots still don't cluster together very well.
 
 ```{r heatmap-tmm}
 dists = dist(t(cpm(y, normalized.lib.sizes=TRUE)))
@@ -164,13 +203,17 @@ heatmap.2(mat, trace="none")
 mds(cpm(y, normalized.lib.sizes=TRUE), samples$condition)
 ```
 
-This is a little bit of an ominious sign for finding DE genes. Is there
+This is a little bit of an ominious sign for finding DE genes. Sometimes
+this occurs because there is a source of systematic variation in the
+samples that we are not accounting for. Is there
 anything obvious about the datasets that we are missing? **Surrogate
 Variable Analysis** (SVA) is a way to see if there is something systematic
 about the data that we are not accounting for in the model. This is done by
 determining the eigensystems of the SVD of the residuals of the model fit and
 comparing them to the eigensystems of a null model consisting of the same
-calculation on repeated permutations of the residuals of the model.
+calculation on repeated permutations of the residuals of the model. If there
+is a signal we are missing in the data it should not show up very strongly in
+random permutations of the residuals.
 
 ```{r sva}
 design = model.matrix(~ 0 + condition, data=samples)
@@ -214,35 +257,20 @@ y = estimateGLMTagwiseDisp(y, design)
 bcv(y)
 ```
 
-# Model fitting
-We will fit three models. Two uncorrected models using **limma** and
-**edgeR** and one corrected model using **limma**.
+# Naive model fitting
+We will fit a naive model using **limma**, by naive I mean that we think we
+have captured all sources of variability in the samples in the metadata we
+have about the samples. We saw using **SVA** above that that might not be
+true, but it is useful to start simple and build in complexity later.
+Right now the metadata we have is the case/control
+status of the samples and that is about it so that will be the extent of the model.
 
-## EdgeR, uncorrected
-```{r edger-nosva}
-design = model.matrix(~ 0 + condition, data=samples)
-colnames(design) = c("case", "control")
-rownames(design) = colnames(counts)
-y = DGEList(counts=counts)
-y = calcNormFactors(y)
-y = estimateGLMCommonDisp(y, design, verbose=TRUE)
-y = estimateGLMTrendedDisp(y, design)
-y = estimateGLMTagwiseDisp(y, design)
-fit = glmFit(y, design)
-```
+We normalize the data based on library size, log-transform the data
+fit a curve describing the mean-variance relationship in RNA-seq data
+(the blue line in the plots above). For this analysis we fit a linear
+model that describes the expression level as a function of the
+**case/control** status.
 
-and test for differential expression across conditions:
-    
-```{r edger-de, results='asis'}
-cm = makeContrasts(ards=control-case, levels=design)
-lrt = glmLRT(fit, contrast=cm)
-FDR = p.adjust(lrt$table$PValue, method="BH")
-```
-
-We find `r sum(FDR < 0.05)` genes that are differentially expressed without
-correcting for the surrogate variables.
-
-## limma, uncorrected
 ```{r limma-uncorrected}
 design = model.matrix(~ 0 + condition, data=samples)
 colnames(design) = c("case", "control")
@@ -251,17 +279,25 @@ y = DGEList(counts=counts)
 y = calcNormFactors(y)
 v = voom(y, design, plot=TRUE)
 fit = lmFit(v, design)
-cm = makeContrasts(ards=conditioncase-conditioncontrol, levels=design)
+cm = makeContrasts(ards=case-control, levels=design)
 fit2 = contrasts.fit(fit, cm)
 fit2 = eBayes(fit2)
 topTable(fit2, coef=1)
 ```
 
-Using **limma** we find `r dim(topTable(fit, n=Inf,p.value=0.05, coef=1))[1]`
-genes that are different.
+From this we find `r dim(topTable(fit2, n=Inf,p.value=0.05, coef=1))[1]`
+genes that are different. The gene is a RPH3A, rabphilin 3A homolog.
+
+Nothing looks off in the plot of the residuals:
+
+```{r residual-plot}
+ggplot(data.frame(fit2), aes(Amean, sigma)) + geom_point() +
+    xlab("Mean expression") + ylab("Residual standard deviation")
+```
 
 ## limma, corrected
-Using SVA we can possibly correct for some of these genes:
+Using SVA we can possibly correct for some of these genes by adding the
+three unaccounted-for covariates into the model and correcting it again.
 
 ```{r limma-corrected}
 design = model.matrix(~ 0 + condition, data=samples)
@@ -284,3 +320,188 @@ topTable(fit2, coef=1)
 This leaves us with nothing as significantly different between the case
 and control samples.
 
+## New sample data
+Zhaozhong provided some more in depth information regarding the patient samples,
+regarding the outcome status of the patients
+of whether they were eventually discharged, deceased or still in the ICU at the
+end of the study, rather than a simple case-control analysis. The data could
+be coded to be a little more descriptive, so we will do that:
+
+```{r full-metadata-load, results='asis'}
+csv_full = "../data/ards_status.csv"
+metadata_full = read.csv(csv_full, header=TRUE, colClasses="factor")
+keep_cols = c("samplename", "description", "gender", "age", "scrstatus")
+metadata_full = metadata_full[, keep_cols]
+metadata_full$scrstatus = revalue(metadata_full$scrstatus,
+    c("1"="deceased", "2"="discharged", "3"="icu"))
+metadata_full$age = as.numeric(as.character(metadata_full$age))
+metadata_full$gender = revalue(metadata_full$gender, c("1"="male", "2"="female"))
+colnames(metadata_full) = c("samplename", "description", "gender", "age", "status")
+metadata_full$ARDS =  unlist(lapply(metadata_full$description, function(x) {str_split(x, "_")[[1]][[2]]}))
+kable(metadata_full, format="html")
+colnames(counts) = metadata_full$ARDS
+```
+
+An more-or-less complete breakdown of the cell types from the whole blood count was
+also provided so merge that with the extended metadata:
+
+```{r full-blood-metadata, results='asis'}
+merged = merge(metadata_full, blood, by.x="ARDS", by.y="ARDS.")
+colnames(merged) = c("ARDS", "samplename", "description", "gender", "age", "status",
+   "MRN", "SampleDate", "WBC", "neutrophils", "lymphocytes", "plt", "rbc", "hgb",
+   "monocyte", "esoinophils", "basophil")
+metadata_full=merged
+kable(metadata_full, format="html")
+```
+
+We are missing the monocyte, esonophils and basophil counts for sample 2828, 2674, and 2185.
+For now we will drop them from the analysis:
+
+```{r drop-incomplete}
+metadata_full = metadata_full[, c("ARDS", "samplename", "description", "gender",
+   "age", "status", "MRN", "SampleDate", "WBC", "neutrophils", "lymphocytes",
+   "plt", "rbc", "hgb")]
+```
+
+Keeping on the metadata that is numeric, we can make a heatmap on the raw values and see if
+the samples cluster at all by blood cell counts:
+
+```{r heatmap-samples}
+numeric_columns = c("WBC", "neutrophils", "lymphocytes", "plt", "rbc", "hgb")
+heatmap_subset = metadata_full[, numeric_columns]
+rownames(heatmap_subset) = paste(metadata_full$ARDS, metadata_full$status, sep="_")
+heatmap.2(as.matrix(heatmap_subset), scale="column", trace="none")
+```
+
+There doesn't really seem to be a clear clustering of patient status based on the
+raw cell type counts. The MDS plot looks like there is a small effect of the
+blood cell type however, but only on the patients that were still in the ICU at
+the end of the study:
+
+```{r sample-mds-plot}
+mds(t(heatmap_subset), metadata_full$status)
+```
+
+Since the counts or on different scales, we should normalize them so they are on
+a standard scale. We convert the cell counts to Z-scores, so each value is the
+number of standard deviations from the mean value for the regressor:
+
+```{r z-score-conversion}
+z_score = function(x) {
+    return((x - mean(x)) / sd(x))
+}
+samples_norm = metadata_full
+for (col in numeric_columns) {
+  samples_norm[, col] = z_score(metadata_full[, col])
+}
+mds(t(samples_norm[, numeric_columns]), metadata_full$status)
+```
+
+Looking at the standarized blood cell count data there is some variability between the samples
+but there isn't anything systematically different in cell type composition between the
+patients discharge status. This is good since we weren't finding anything before; it
+is possible the patient-to-patient cell type variability is masking an effect. There
+are definitely some large differences in cell type composition between patients:
+
+```{r patient-blood-differences, results='asis'}
+kable(summary(samples_norm[, numeric_columns], na.rm=TRUE), format="html")
+```
+
+## Naive fit
+The updated patient metadata also had more fine-grained classification of the patient's
+discharge status as well as a correction in one of the statuses. It is possible this
+is enough to find some DE genes, so we will redo the analysis with that to start and
+add the cell-type count correction after.
+
+```{r naive-fit}
+design = model.matrix(~ 0 + status, data=metadata_full)
+colnames(design) = c("deceased", "discharged", "icu")
+rownames(design) = colnames(counts)
+y = DGEList(counts=counts)
+y = calcNormFactors(y)
+v = voom(y, design, plot=TRUE)
+fit = lmFit(v, design)
+cm = makeContrasts(deceased=deceased-discharged,
+                   icu=icu-discharged,
+                   not_deceased=icu-deceased,
+                   levels=design)                
+fit2 = contrasts.fit(fit, cm)
+fit2 = eBayes(fit2)
+deceased = topTable(fit2, coef="deceased", n=Inf, p.value=1)
+icu = topTable(fit2, coef="icu", n=Inf, p.value=1)
+not_deceased = topTable(fit2, coef="not_deceased", n=Inf, p.value=1)
+```
+
+There are `r dim(subset(deceased, adj.P.Val < 0.05))[1]` genes
+different in the **deceased** vs **discharged** comparison. There are
+There are `r dim(subset(icu, adj.P.Val < 0.05))[1]` genes
+different in the **icu** vs **discharged** comparison.
+There are `r dim(subset(not_deceased, adj.P.Val < 0.05))[1]` genes
+different in the **icu** vs **deceased** comparison.
+
+The tables below are the genes ranked by smallest adjusted p-value, genes with
+an adjusted p-value < 0.05 are considered differentially expressed.
+
+```{r write-results, results='asis'}
+kable(head(deceased), format="html")
+write.table(deceased, file="deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+kable(head(icu), format="html")
+write.table(icu, file="icu.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+kable(head(not_deceased), format="html")
+write.table(not_deceased, file="not_deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+```
+
+These are saved in the files deceased.tsv, icu.tsv and not_deceased.tsv. The
+entire list is saved-- you can filter to get the same results as above by
+filtering the adjusted p-value column to keep only entries that are < 0.05.
+
+Can we do better if we correct for cell type counts?
+
+## Cell type corrected fit
+```{r corrected-fit}
+design = model.matrix(~ 0 + WBC + neutrophils + lymphocytes + plt + hgb + status,
+ data=samples_norm)
+colnames(design) = c("WBC", "neutrophils", "lymphocytes", "plt",
+ "hgb", "deceased", "discharged", "icu")
+rownames(design) = colnames(counts)
+y = DGEList(counts=counts)
+y = calcNormFactors(y)
+v = voom(y, design, plot=TRUE)
+fit = lmFit(v, design)
+cm = makeContrasts(deceased=deceased-discharged,
+                   icu=icu-discharged,
+                   not_deceased=icu-deceased,
+                   levels=design)                
+fit2 = contrasts.fit(fit, cm)
+fit2 = eBayes(fit2)
+deceased_corrected = topTable(fit2, coef="deceased", n=Inf, p.value=1)
+icu_corrected = topTable(fit2, coef="icu", n=Inf, p.value=1)
+not_deceased_corrected = topTable(fit2, coef="not_deceased", n=Inf, p.value=1)
+```
+
+There are `r dim(subset(deceased_corrected, adj.P.Val < 0.05))[1]` genes
+different in the **deceased** vs **discharged** comparison. There are
+There are `r dim(subset(icu_corrected, adj.P.Val < 0.05))[1]` genes
+different in the **icu** vs **discharged** comparison. 
+There are `r dim(subset(not_deceased_corrected, adj.P.Val < 0.05))[1]` genes
+different in the **icu** vs **deceased** comparison.
+
+The tables below are the genes ranked by smallest adjusted p-value, genes with
+an adjusted p-value < 0.05 are considered differentially expressed.
+
+```{r write-corrected-results, results='asis'}
+write.table(deceased_corrected, file="deceased_corrected.tsv", sep="\t",
+  quote=FALSE, col.names=TRUE)
+kable(head(deceased_corrected), format="html")
+write.table(icu_corrected, file="icu_corrected.tsv", sep="\t",
+  quote=FALSE, col.names=TRUE)
+kable(head(icu_corrected), format="html")
+write.table(not_deceased_corrected, file="not_deceased_corrected.tsv", sep="\t",
+  quote=FALSE, col.names=TRUE)
+kable(head(not_deceased_corrected), format="html")
+```
+
+These are saved in the files deceased_corrected.tsv, icu_corrected.tsv and
+not_deceased_corrected.tsv. The
+entire list is saved-- you can filter to get the same results as above by
+filtering the adjusted p-value column to keep only entries that are < 0.05.
