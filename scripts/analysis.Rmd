@@ -271,7 +271,7 @@ fit a curve describing the mean-variance relationship in RNA-seq data
 model that describes the expression level as a function of the
 **case/control** status.
 
-```{r limma-uncorrected}
+```{r limma-uncorrected, results='asis'}
 design = model.matrix(~ 0 + condition, data=samples)
 colnames(design) = c("case", "control")
 rownames(design) = colnames(counts)
@@ -282,7 +282,7 @@ fit = lmFit(v, design)
 cm = makeContrasts(ards=case-control, levels=design)
 fit2 = contrasts.fit(fit, cm)
 fit2 = eBayes(fit2)
-topTable(fit2, coef=1)
+kable(topTable(fit2, coef=1), format="html")
 ```
 
 From this we find `r dim(topTable(fit2, n=Inf,p.value=0.05, coef=1))[1]`
@@ -299,7 +299,7 @@ ggplot(data.frame(fit2), aes(Amean, sigma)) + geom_point() +
 Using SVA we can possibly correct for some of these genes by adding the
 three unaccounted-for covariates into the model and correcting it again.
 
-```{r limma-corrected}
+```{r limma-corrected, results='asis'}
 design = model.matrix(~ 0 + condition, data=samples)
 colnames(design) = c("case", "control")
 rownames(design) = colnames(counts)
@@ -314,7 +314,7 @@ fit = lmFit(v$E, designsv)
 cm = makeContrasts(ards=case - control, levels=designsv)
 fit2 = contrasts.fit(fit, cm)
 fit2 = eBayes(fit2)
-topTable(fit2, coef=1)
+kable(topTable(fit2, coef=1), format="html")
 ```
 
 This leaves us with nothing as significantly different between the case
