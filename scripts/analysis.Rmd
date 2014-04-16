@@ -83,6 +83,7 @@ library(DESeq2)
 library(reshape)
 library(sva)
 library(gplots)
+library(stringr)
 wd = "/Users/rory/cache/christiani_ards/scripts"
 setwd(wd)
 #metadata_file = "/Users/rory/hsph/hsph/projects/christiani_ARDS/data/ards.csv"
@@ -444,11 +445,11 @@ an adjusted p-value < 0.05 are considered differentially expressed.
 
 ```{r write-results, results='asis'}
 kable(head(deceased), format="html")
-write.table(deceased, file="deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+write.table(annotate_df(deceased), file="deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE)
 kable(head(icu), format="html")
-write.table(icu, file="icu.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+write.table(annotate_df(icu), file="icu.tsv", sep="\t", quote=FALSE, col.names=TRUE)
 kable(head(not_deceased), format="html")
-write.table(not_deceased, file="not_deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+write.table(annotate_df(not_deceased), file="not_deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE)
 ```
 
 These are saved in the files deceased.tsv, icu.tsv and not_deceased.tsv. The
@@ -490,13 +491,13 @@ The tables below are the genes ranked by smallest adjusted p-value, genes with
 an adjusted p-value < 0.05 are considered differentially expressed.
 
 ```{r write-corrected-results, results='asis'}
-write.table(deceased_corrected, file="deceased_corrected.tsv", sep="\t",
+write.table(annotate_df(deceased_corrected), file="deceased_corrected.tsv", sep="\t",
   quote=FALSE, col.names=TRUE)
 kable(head(deceased_corrected), format="html")
-write.table(icu_corrected, file="icu_corrected.tsv", sep="\t",
+write.table(annotate_df(icu_corrected), file="icu_corrected.tsv", sep="\t",
   quote=FALSE, col.names=TRUE)
 kable(head(icu_corrected), format="html")
-write.table(not_deceased_corrected, file="not_deceased_corrected.tsv", sep="\t",
+write.table(annotate_df(not_deceased_corrected), file="not_deceased_corrected.tsv", sep="\t",
   quote=FALSE, col.names=TRUE)
 kable(head(not_deceased_corrected), format="html")
 ```
@@ -505,3 +506,33 @@ These are saved in the files deceased_corrected.tsv, icu_corrected.tsv and
 not_deceased_corrected.tsv. The
 entire list is saved-- you can filter to get the same results as above by
 filtering the adjusted p-value column to keep only entries that are < 0.05.
+
+## Cell type corrected fit with pooling by deceased state
+From an email from ZhaoZhong:
+
+```
+I am wondering if you can combine the discharged and still in the ICU groups into one group, and deceased inanother group? Since it's
+doesn't give any practical meaning to the death outcome if we have discharged and still in the ICU groups separate (they are both survival). Thank you!
+```
+
+
+```{r corrected-fit-pooled}
+samples_norm$deceased = revalue(samples_norm$status, c("discharged"="alive", "icu"="alive"))
+design = model.matrix(~ 0 + WBC + neutrophils + lymphocytes + plt + hgb + deceased,
+ data=samples_norm)
+
+colnames(design) = c("WBC", "neutrophils", "lymphocytes", "plt",
+ "hgb", "deceased", "alive")
+rownames(design) = colnames(counts)
+y = DGEList(counts=counts)
+y = calcNormFactors(y)
+v = voom(y, design, plot=TRUE)
+fit = lmFit(v, design)
+cm = makeContrasts(deceased=deceased-alive, levels=design)
+fit2 = contrasts.fit(fit, cm)
+fit2 = eBayes(fit2)
+deceased_corrected = topTable(fit2, coef="deceased", n=Inf, p.value=1)
+```
+
+There are `r dim(subset(deceased_corrected, adj.P.Val < 0.05))[1]` genes
+different in the **deceased** vs **alive** comparison. 
