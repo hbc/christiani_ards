@@ -120,6 +120,7 @@ annotate_df = function(d) {
 		filters=c(filter_type), values=rownames(d),
 		mart=ensembl)
 	m = merge(d, a, by.x="row.names", by.y=filter_type)
+        colnames(m)[1] = "id"
 	return(m)
 }
 ```
@@ -445,11 +446,14 @@ an adjusted p-value < 0.05 are considered differentially expressed.
 
 ```{r write-results, results='asis'}
 kable(head(deceased), format="html")
-write.table(annotate_df(deceased), file="deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+write.table(annotate_df(deceased), file="deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE,
+   row.names=FALSE)
 kable(head(icu), format="html")
-write.table(annotate_df(icu), file="icu.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+write.table(annotate_df(icu), file="icu.tsv", sep="\t", quote=FALSE, col.names=TRUE,
+   row.names=FALSE)
 kable(head(not_deceased), format="html")
-write.table(annotate_df(not_deceased), file="not_deceased.tsv", sep="\t", quote=FALSE, col.names=TRUE)
+write.table(annotate_df(not_deceased), file="not_deceased.tsv", sep="\t", quote=FALSE,
+   col.names=TRUE, row.names=FALSE)
 ```
 
 These are saved in the files deceased.tsv, icu.tsv and not_deceased.tsv. The
@@ -492,13 +496,13 @@ an adjusted p-value < 0.05 are considered differentially expressed.
 
 ```{r write-corrected-results, results='asis'}
 write.table(annotate_df(deceased_corrected), file="deceased_corrected.tsv", sep="\t",
-  quote=FALSE, col.names=TRUE)
+  quote=FALSE, col.names=TRUE, row.names=FALSE)
 kable(head(deceased_corrected), format="html")
 write.table(annotate_df(icu_corrected), file="icu_corrected.tsv", sep="\t",
-  quote=FALSE, col.names=TRUE)
+  quote=FALSE, col.names=TRUE, row.names=FALSE)
 kable(head(icu_corrected), format="html")
 write.table(annotate_df(not_deceased_corrected), file="not_deceased_corrected.tsv", sep="\t",
-  quote=FALSE, col.names=TRUE)
+  quote=FALSE, col.names=TRUE, row.names=FALSE)
 kable(head(not_deceased_corrected), format="html")
 ```
 
